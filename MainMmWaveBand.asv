@@ -1,0 +1,193 @@
+%%% The performance measure of the network is the 
+% signal-to-interference-plus-noise ratio (SINR) coverage probability, 
+% which is prob[SINR>T]. The network elements are distributed based on 
+% Poisson Point Process (PPP) distribution.
+% Networks elements are:
+
+% -D2D transmitters (interferes)
+% 1- blockages (length, width, and orientation of the
+% blockages are generated based on the uniform distribution)
+% 2- The reference receiver located at the origin o(0,0)
+% 3- The performance of the reference users is measured, 
+% 
+% - Based on the Slyvniak theorem this measures the whole network performance.
+% - To average out noise the simulation is repeated for 3000 iterations.
+% - The analytical formulation and details of the network can be found in
+% [1] Device-to-device communications in the millimeter wave band:
+% https://ieeexplore.ieee.org/abstract/document/8363940/
+
+
+%%%%% Author: Niloofar Bahadori
+
+clc; clear; close all
+%%% Network area
+areaLen = 2e3;
+simArea = (2*areaLen).^2;
+
+%%% Network elements' density
+lambdaBs = 1e-6; % Desity of Base stations per m^2
+lambdaIntfr = 5e-5; % Desity of Interferers per m^2
+numIntfr = poissrnd(lambdaIntfr*simArea);
+%%% Blockage
+lambdaBlock = 4e-6; % Desity of blockages per m^2
+blockageLen = 500; % Expencted value of building blockages' length
+blockageWid = 550; % Expencted value of building blockages' width
+numBuilding = poissrnd (lambdaBlock*simArea);
+
+%%% Antenna properties
+hpBW = 30*pi/180;
+G = db2pow (10);
+g = db2pow (-10);
+
+%%% Reference Pair
+coordRefRx = [0,0];
+distanceRef = 50;
+coordRefTx = [distanceRef*cos(hpBW/2),distanceRef*sin(hpBW/2)];
+% figure
+% plot([coordRefRx(1),coordRefTx(1)],[coordRefRx(2),coordRefTx(2)])
+
+%%% Network properties
+userPower = 1; % 1 watt
+noise=db2pow(-65)/1000; % noise in watt
+freq = 28e9; % frequency
+lambda = 3e8/freq;
+fsPL = (4*pi/lambda)^2; %%%free space path loss
+plELOS = 2; plENLOS = 4; %%% path loss exponent in LOS and NLOS regime
+
+% plot(coordIntfr(:,1),coordIntfr(:,2),'b*')
+% hold on
+tSINRdB = -40:2:40; % SINR Threshold
+tSINR = db2pow(tSINRdB);
+numT = length(tSINR);
+MC = 50; %number of Monte-Carlo runs
+BW = 1e9; %% bandwidth: 1GHz
+n=0;
+
+trial =30;
+pc = zeros(trial,length(tSINR));
+ %%% Add Randomness to blockages
+for t =1:trial %%%% Different trilas generate different blockage topology
+    
+    coveredNumb=zeros(size(tSINR));
+%     figure;
+    [coordBlockP1,coordBlockP2,coordBlockP3,coordBlockP4] = RandBlockage( blockageLen, blockageWid, numBuilding,areaLen );
+
+    for k=1:MC %%% in each trial, MC different topolofy of users 
+        X=['trial=',num2str(t), ' iteration=', num2str(k)];
+        display(X)
+        %%% Generate random Interferers' location and antenna direction:
+        coordIntfr = unifrnd(-areaLen, areaLen, [numIntfr, 2]);
+        phiIntfr = 2*pi*rand(1,numIntfr);  % direction of interfrers' antenna  (in the mmWave the communication is directional ref. Fig(3)[1] )
+%         plot(coordIntfr(:,1), coordIntfr(:,2), 'bo', 'LineWidth',1.5)
+%         hold on
+
+        %%% If the refrence pair is indoor skip this run of the MC loop
+        if ~(FindOutdoorUser(coordRefRx(1),coordRefRx(2),coordBlockP1,coordBlockP2,coordBlockP3)) && ...
+                ~(FindOutdoorUser(coordRefTx(1),coordRefTx(2),coordBlockP1,coordBlockP2,coordBlockP3) )
+            continue
+        end
+%         Interference = zeros(numIntfr,1);
+        if ~( IsBlocked ( coordRefTx, coordBlockP1,coordBlockP2,coordBlockP3,coordBlockP4 ))
+            PLE = plELOS;
+            fadeRef = exprnd(1);
+            signal = userPower*G*G*fadeRef*(distanceRef ^-PLE)/fsPL;
+       else
+%             PLE = plENLOS; 
+        %%% If the reference trasnmitter is blocked no or tranceivers are
+        %%% not outdoor the signal will be zero
+            signal = 0;
+            
+        end
+        Interference = zeros(numIntfr,1);
+        for i=1:numIntfr
+            %%% if the interferer is outdoor :
+            if FindOutdoorUser(coordIntfr(i,1),coordIntfr(i,2),coordBlockP1,coordBlockP2,coordBlockP3)
+                %%%% if the link form interferer to the reference user is not
+                %%%% blocked
+%                 plot(coordIntfr(i,1), coordIntfr(i,2), 'b*', 'LineWidth',1.5)
+                if ~( IsBlocked ( coordIntfr(i,:), coordBlockP1,coordBlockP2,coordBlockP3,coordBlockP4 ))
+%                     plot(coordIntfr(i,1), coordIntfr(i,2), 'r*', 'LineWidth',1.5)
+                    fade = exprnd(1);
+%                     fade = gamrnd (3,1/3);
+                    distance = sqrt(sum((coordRefRx-coordIntfr(i,:)).^2));
+                    gainIntfr = AntGain( coordIntfr(i,1),coordIntfr(i,2),phiIntfr(i),hpBW,G,g );
+                    Interference(i)= userPower*gainIntfr*fade*(distance^-plELOS)/fsPL;
+                else
+                    %%% It is considered that if the interferer is blocked no
+                    %%% interference is caused, which is a fair assumption in the
+                    %%% mmWave band.
+                    Interference(i)=0;
+                end
+            else
+                %%% if the interfere is not outdoor it causes no
+                %%% interefrence 
+                Interference(i)=0;
+            end
+        end
+        SINR = signal/(noise+sum(Interference));
+        for j=1:numT
+            T=tSINR(j);
+            if SINR>=T
+                coveredNumb(j)=coveredNumb(j)+1;
+            end
+        end
+    end
+    pc(t,:) = coveredNumb/MC;
+end
+
+%%% Identify the times that reference users were indoor
+u=1;
+idx=[];
+for h=1:size(pc,1)
+    if prod(pc(h,:)==0)==1
+        idx(u)=h;
+        u=u+1;
+    end
+end
+%%%  Delete invalid rows (indoor users)
+if ~isempty(idx)
+   pc(idx,:)=[];
+end
+% %%% To see how many iteration is needed.
+% for k=1:size(pc,1)
+%     pcT(k)=sum(pc(1:k,21))/k;
+% end
+
+for j=1:size(pc,2)
+    pcTotal(j)=sum(pc(:,j))/size(pc,1);
+end
+
+
+for j = 1:length(areaLen)
+    plot(tSINRdB,pcTotal(j,:),'k+','LineWidth',1.5);
+    hold on
+end
+xlabel('SINR Threshold (dB)')
+ylabel('SINR Coverage Probability (P[ SINR \geq T ])')
+%%%  Analytical formulation [1]
+pcAnalytic = zeros(numT,1);
+beta=2*lambdaBlock*(blockageLen+blockageWid)/pi;
+% beta=.008;
+PGG=(hpBW/(2*pi))^2;
+PGg=2*(hpBW/(2*pi))*((2*pi-hpBW)/(2*pi));
+Pgg=((2*pi-hpBW)/(2*pi)).^2;
+lp=exp(-beta*distanceRef);
+C = 1/fsPL;
+C1 = C*userPower*G*G;
+eL = tSINR*(C1*distanceRef^-plELOS)^-1;
+eN = tSINR*(C1*distanceRef^-plENLOS)^-1;
+CL = C*userPower*eL;
+CN = C*userPower*eN;
+
+for z=1:numT
+    sub_sum=0;
+    
+    A=exp(-eL(z)*noise)*LaplaceEl( CL(z),G,g,beta,plELOS,PGG,PGg,Pgg,lambdaIntfr )*lp;
+            
+    B=exp(-eL(z)*noise)*LaplaceEl( CL(z),G,g,beta,plELOS,PGG,PGg,Pgg,lambdaIntfr )*(1-lp);
+    pcAnalytic(z) = A+B;
+    
+end
+plot(tSINRdB,pcAnalytic,'r','LineWidth',1.5)
+legend ('analytical result','simulation result')
+hold on
